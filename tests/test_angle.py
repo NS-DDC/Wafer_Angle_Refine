@@ -175,9 +175,19 @@ class AngleTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 angle(str(bad))
 
-    def test_public_export_and_signature_are_only_angle_src(self):
+    def test_public_export_has_one_positional_src_and_keyword_only_options(self):
         self.assertEqual(list(ANGLE_MODULE.__all__), ["angle"])
-        self.assertEqual(list(inspect.signature(angle).parameters), ["src"])
+        parameters = list(inspect.signature(angle).parameters.values())
+        self.assertEqual(parameters[0].name, "src")
+        self.assertEqual(parameters[0].kind, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        self.assertEqual(parameters[0].default, inspect.Parameter.empty)
+        self.assertEqual(len(parameters), 26)
+        for parameter in parameters[1:]:
+            self.assertEqual(parameter.kind, inspect.Parameter.KEYWORD_ONLY)
+            self.assertTrue(
+                parameter.name.startswith("notch_")
+                or parameter.name in ("alignment_interpolation", "alignment_border_value")
+            )
 
     def test_copied_module_runs_in_isolated_python_without_upstream_or_output_files(self):
         with tempfile.TemporaryDirectory(prefix="angle-isolated-", dir=ROOT / "tests") as directory:

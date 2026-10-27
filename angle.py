@@ -4,9 +4,10 @@
 # below preserves the caller's uint8 grayscale, BGR, or BGRA representation.
 """Image-only wafer rotation: ``aligned = angle(src)``.
 
-The wafer notch must be visible near the bottom (90 +/- 45 image-space degrees).
-Detection failures raise RuntimeError. Rotation uses the fitted wafer centre,
-cubic interpolation, the input canvas size, and zero-filled border pixels.
+By default the wafer notch is searched near the bottom (90 +/- 45 degrees).
+The V7 notch and alignment settings are available as keyword-only arguments.
+Detection failures raise RuntimeError by default. Rotation uses the fitted
+wafer centre and input canvas size; interpolation and border fill are adjustable.
 """
 
 from __future__ import annotations
@@ -2054,8 +2055,36 @@ def _detect_wafer_notch(
 __all__ = ["angle"]
 
 
-def angle(src) -> np.ndarray:
-    """Return a new image with its wafer notch aligned to the bottom.
+def angle(
+    src,
+    *,
+    notch_reference_angle_deg: float = 90.0,
+    notch_max_dimension: int = 3072,
+    notch_angle_samples: int = 3600,
+    notch_baseline_window_deg: float = 10.0,
+    notch_min_depth_px: Optional[float] = None,
+    notch_min_depth_ratio: float = 0.001,
+    notch_min_wide_deg: float = 2.0,
+    notch_search_center_angle_deg: float = 90.0,
+    notch_search_half_width_deg: float = 45.0,
+    notch_wafer_center_hint_px: Optional[_Point] = None,
+    notch_wafer_radius_hint_px: Optional[float] = None,
+    notch_roi_center_px: Optional[_Point] = None,
+    notch_roi_half_size_px: Union[float, Tuple[float, float]] = 600.0,
+    notch_semicircle_radius_range_px: Optional[Tuple[float, float]] = None,
+    notch_semicircle_min_score: float = 0.55,
+    notch_use_roi_background: bool = True,
+    notch_background_palette_size: int = 3,
+    notch_background_outer_band_fraction: float = 0.28,
+    notch_background_distance_threshold_lab: Optional[float] = None,
+    notch_background_noise_margin_lab: float = 4.0,
+    notch_background_morph_px: float = 24.0,
+    notch_fallback_mode: Literal["rim_intrusion", "none"] = "rim_intrusion",
+    notch_failure_mode: Literal["error", "zero"] = "error",
+    alignment_interpolation: int = cv2.INTER_CUBIC,
+    alignment_border_value: Union[int, Tuple[int, int, int], Tuple[int, int, int, int]] = (0, 0, 0),
+) -> np.ndarray:
+    """Return only the image rotated to the configured notch direction.
 
     ``src`` is a uint8 ndarray (H,W), (H,W,3) BGR, or (H,W,4) BGRA, or a
     str/Path image filename. Unicode paths are decoded without cv2.imread.
@@ -2063,7 +2092,14 @@ def angle(src) -> np.ndarray:
 
     Invalid arrays or undecodable files raise ValueError/TypeError. Missing
     files raise FileNotFoundError; unreliable wafer/notch detection raises
-    RuntimeError. There is no silent fallback to an uncorrected image.
+    RuntimeError by default. ``notch_failure_mode="zero"`` permits an
+    unrotated result when the wafer outline is found but the notch is not;
+    outline detection errors still propagate, matching the original detector.
+
+    Keyword-only notch and alignment settings retain their V7 names and
+    defaults. Coordinates, ROI sizes, and radius hints use original-image
+    pixels. Calling ``angle(src)`` without options keeps the bottom-alignment
+    defaults. No diagnostic object, matrix, or overlay is returned.
     """
     if isinstance(src, np.ndarray):
         image = src
@@ -2097,10 +2133,35 @@ def angle(src) -> np.ndarray:
         detection_image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
     else:
         detection_image = image
-    result = _detect_wafer_notch(detection_image)
+    result = _detect_wafer_notch(
+        detection_image,
+        reference_angle_deg=notch_reference_angle_deg,
+        max_dimension=notch_max_dimension,
+        angle_samples=notch_angle_samples,
+        baseline_window_deg=notch_baseline_window_deg,
+        min_notch_depth_px=notch_min_depth_px,
+        min_notch_depth_ratio=notch_min_depth_ratio,
+        min_wide_notch_deg=notch_min_wide_deg,
+        search_center_angle_deg=notch_search_center_angle_deg,
+        search_half_width_deg=notch_search_half_width_deg,
+        wafer_center_hint_px=notch_wafer_center_hint_px,
+        wafer_radius_hint_px=notch_wafer_radius_hint_px,
+        notch_roi_center_px=notch_roi_center_px,
+        notch_roi_half_size_px=notch_roi_half_size_px,
+        notch_semicircle_radius_range_px=notch_semicircle_radius_range_px,
+        notch_semicircle_min_score=notch_semicircle_min_score,
+        notch_use_roi_background=notch_use_roi_background,
+        notch_background_palette_size=notch_background_palette_size,
+        notch_background_outer_band_fraction=notch_background_outer_band_fraction,
+        notch_background_distance_threshold_lab=notch_background_distance_threshold_lab,
+        notch_background_noise_margin_lab=notch_background_noise_margin_lab,
+        notch_background_morph_px=notch_background_morph_px,
+        notch_fallback_mode=notch_fallback_mode,
+        failure_mode=notch_failure_mode,
+    )
     matrix = cv2.getRotationMatrix2D(result.wafer_center_px, result.correction_angle_deg, 1.0)
     height, width = image.shape[:2]
     return cv2.warpAffine(
-        image, matrix, (width, height), flags=cv2.INTER_CUBIC,
-        borderMode=cv2.BORDER_CONSTANT, borderValue=0,
+        image, matrix, (width, height), flags=alignment_interpolation,
+        borderMode=cv2.BORDER_CONSTANT, borderValue=alignment_border_value,
     )
