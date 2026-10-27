@@ -1,169 +1,121 @@
 # Wafer Angle Refine
 
-웨이퍼 이미지에서 **노치를 기준으로 각도를 보정한 이미지 한 장**만 반환합니다.
+웨이퍼 **내부 격자선을 수평·수직으로 맞춘 이미지 한 장**을 반환합니다.
 
-```python
+~~~python
 from angle import angle
 
 Angle_refine = angle(src)
-```
+~~~
 
-YOLO 모델, 검출 좌표, 중심 clip, 격자 생성, die 조회가 필요하지 않습니다. 오버레이·좌표·행렬·진단 객체를 반환하지 않고, 함수를 호출하는 것만으로 파일을 저장하거나 창을 띄우지 않습니다.
+**angle.py 하나를 통째로 복사하면 됩니다.** 필요한 패키지는 NumPy와 OpenCV입니다. YOLO 모델이나 검출 좌표 없이 입력 이미지에서 격자 기울기를 구합니다. 함수는 파일을 저장하거나 창을 띄우지 않습니다.
 
-## 설치
+기존 노치 기준 버전과 조절 파라미터는 [notch-reference 브랜치](https://github.com/NS-DDC/Wafer_Angle_Refine/tree/notch-reference)에 보존했습니다. main의 angle()은 내부 격자를 기준으로 합니다. 따라서 노치의 최종 위치는 아래쪽으로 고정되지 않습니다.
+
+## 설치와 사용
 
 Python 3.10 이상에서 사용합니다.
 
-```bash
+~~~bash
 python -m pip install -r requirements.txt
-```
+~~~
 
-이미 NumPy와 OpenCV가 설치된 프로젝트라면 `angle.py` 파일만 복사해 사용할 수 있습니다. 기존 `Wafer_Via` 저장소를 설치하거나 함께 복사할 필요가 없습니다.
-
-## 사용
-
-OpenCV 이미지 배열을 넣습니다.
-
-```python
+~~~python
 import cv2
 from angle import angle
 
 src = cv2.imread("wafer.png", cv2.IMREAD_UNCHANGED)
 Angle_refine = angle(src)
 cv2.imwrite("wafer_aligned.png", Angle_refine)
-```
+~~~
 
-파일 경로도 직접 넣을 수 있습니다. 한글 경로를 지원합니다.
+한글 파일 경로도 직접 넣을 수 있습니다.
 
-```python
-from angle import angle
-
+~~~python
 Angle_refine = angle("샘플/웨이퍼.png")
-```
+~~~
 
-### 기존 V7 노치 설정 전달
+- 입력: uint8 회색조 (H, W), BGR (H, W, 3), BGRA (H, W, 4) 배열 또는 이미지 경로.
+- 출력: 입력과 같은 크기·채널·dtype의 새 NumPy 배열. 입력 배열은 변경하지 않습니다.
+- 회전 중심: 이미지 중앙. 캔버스 크기를 유지하므로 가장자리 일부가 잘리고 빈 영역이 생길 수 있습니다.
+- 격자 근거가 부족하면 RuntimeError가 발생합니다. 호출자가 실패 시 원본을 사용할지 결정할 수 있습니다.
 
-`angle(src)` 호출은 그대로 사용할 수 있습니다. 추가 옵션은 모두 **이름을 지정하는 keyword-only 인자**이며, 기존 V7 `wafer_via_notch.py`의 `build_die_map_from_yolo()`에서 쓰던 검출용 `notch_*` 이름과 기본값을 유지합니다.
+~~~python
+try:
+    Angle_refine = angle(src)
+except RuntimeError as exc:
+    print(f"격자 각도 보정 보류: {exc}")
+    Angle_refine = src.copy()
+~~~
 
-아래 변수에는 기존 프로젝트에서 사용하는 ROI·웨이퍼 중심·반경 값을 넣습니다. 예시용 임의 숫자를 실제 이미지 설정으로 가정하지 않습니다. 힌트나 노치 반경 범위를 사용하지 않았다면 해당 항목을 생략하면 됩니다.
+## 동작
 
-```python
-from angle import angle
+~~~mermaid
+flowchart LR
+    A[입력 이미지] --> B[중앙 영역 선택]
+    B --> C[Lab 색상·밝기 경계]
+    C --> D[회전각별 가로·세로 투영]
+    C --> E[FFT 방향 분석]
+    D --> F{두 축의 격자 근거 확인}
+    E --> F
+    F -->|확실함| G[원본을 이미지 중앙 기준으로 회전]
+    F -->|불확실함| H[RuntimeError]
+    G --> I[보정 이미지 한 장 반환]
+~~~
 
-# roi_x, roi_y 등은 기존 프로젝트에서 얻은 원본 이미지 좌표/설정값입니다.
-notch_options = {
-    "notch_roi_center_px": (roi_x, roi_y),
-    "notch_roi_half_size_px": (roi_half_width, roi_half_height),
-    "notch_wafer_center_hint_px": (wafer_cx, wafer_cy),
-    "notch_wafer_radius_hint_px": wafer_radius_px,
-    "notch_semicircle_radius_range_px": (notch_radius_min_px, notch_radius_max_px),
-    "notch_failure_mode": "error",
-}
+Lab의 밝기와 두 색상 축에서 경계 에너지를 계산합니다. 흰 격자선과 초록 내부 패턴처럼 색상이 다른 경계도 분석 대상입니다. 후보 각도로 분석 이미지를 돌려 행·열 방향으로 합쳤을 때, 격자가 축에 맞으면 반복 피크가 선명해지는 성질을 이용합니다. 가로·세로 각각의 최적 방향과 반복 신호도 확인합니다.
 
-Angle_refine = angle(src, **notch_options)
-```
+FFT에서는 반복 주기가 강한 주파수 링의 방향 집중도가 충분할 때 해당 방향을 사용하고, 그렇지 않으면 넓은 주파수 대역의 추정값을 사용합니다. 내부 회로 무늬가 만드는 다른 방향의 영향을 줄이기 위한 검사입니다. 분석 중에는 여러 후보를 회전해 보지만, 최종 출력은 누적 각도로 원본을 한 번만 회전해 만듭니다.
 
-이미 검출용 노치 옵션만 담은 `notch_options` 사전이 있다면 마지막 호출에 그대로 전달할 수 있습니다. YOLO·격자·중심 교차점 보정 옵션, `return_notch_visuals`, `notch_visual_max_dimension`, `notch_zoom_size_px`, `notch_zoom_scale`, 이미지 반환 여부 옵션은 이 함수에 전달하지 않습니다. 반환은 옵션과 관계없이 이미지 한 장입니다.
+이 작업은 **격자 전체의 기울기 보정**입니다. refine_cross_point처럼 개별 십자가 중심을 찾거나 die 박스를 생성하지 않습니다. 사각 격자는 90도마다 같은 축 정렬을 만들므로 가장 가까운 수평·수직 방향으로 맞춥니다. 격자만으로 위·아래 또는 90도 회전 여부를 판별하지는 않습니다.
 
-### 옵션과 기본값
+## 파라미터
 
-`*_px` 위치·거리 값은 모두 **축소 전 입력 원본 이미지의 pixel** 기준입니다. 노치 ROI의 `(x, y)`도 전체 원본 이미지의 좌표이며, crop 내부 좌표나 `notch_max_dimension`으로 축소된 영상의 좌표가 아닙니다. 함수 내부에서 필요한 크기로 변환합니다. 각도는 오른쪽 0°, 아래쪽 90°인 이미지 좌표 기준입니다.
+아래 파라미터는 모두 angle(src, 이름=값)으로 조절합니다. src 뒤의 옵션은 키워드로 전달합니다.
 
-| 옵션 | 기본값 | 의미 |
-|---|---|---|
-| `notch_reference_angle_deg` | `90.0` | 보정 후 노치가 향할 목표 각도. 기본값은 아래쪽 |
-| `notch_max_dimension` | `3072` | 검출용 작업 영상의 최대 변 길이(px). 출력 이미지 크기는 바꾸지 않음 |
-| `notch_angle_samples` | `3600` | 원주 방향 샘플 수. 내부에서 최소 720으로 처리 |
-| `notch_baseline_window_deg` | `10.0` | **이전 호출과의 호환용으로만 유지. 현재 알고리즘에서 사용하지 않아 값을 바꿔도 효과 없음** |
-| `notch_min_depth_px` | `None` | 노치 최소 깊이의 원본 px 값. 지정하면 아래 비율 대신 사용 |
-| `notch_min_depth_ratio` | `0.001` | 최소 깊이를 웨이퍼 반경 비율로 정함. `notch_min_depth_px=None`일 때 사용하며 작업 영상에서 최소 1.25px 적용 |
-| `notch_min_wide_deg` | `2.0` | 넓고 얕은 노치 판정에 사용하는 최소 각도 폭 |
-| `notch_search_center_angle_deg` | `90.0` | ROI 미지정 시 노치 탐색 중심 방향 |
-| `notch_search_half_width_deg` | `45.0` | 탐색 중심 양쪽의 반폭(°), 허용 범위 2~120 |
-| `notch_wafer_center_hint_px` | `None` | 웨이퍼 중심 `(x, y)` 힌트. ROI 중심과 다른 값이며 초기 외곽 추정을 도움 |
-| `notch_wafer_radius_hint_px` | `None` | 웨이퍼 반경 힌트(px). 노치 자체의 반경과 다름 |
-| `notch_roi_center_px` | `None` | 예상 노치 ROI 중심 `(x, y)`. 지정하면 해당 ROI 방향으로 탐색 중심을 계산 |
-| `notch_roi_half_size_px` | `600.0` | ROI 반크기. 숫자 하나 또는 `(half_width, half_height)`, 각 값은 양수. 600이면 요청 영역은 중심 양쪽 600px |
-| `notch_semicircle_radius_range_px` | `None` | ROI의 노치 형상 반경 범위 `(min, max)`. `0 < min < max`. `None`이면 자동 설정 |
-| `notch_semicircle_min_score` | `0.55` | ROI 노치 형상 점수 하한, 0~1 |
-| `notch_use_roi_background` | `True` | ROI 바깥쪽에서 배경색을 학습하고 경계와 연결된 배경으로 노치 형상을 검사. ROI를 지정했을 때 적용 |
-| `notch_background_palette_size` | `3` | ROI 배경 대표색 수, 1~8 |
-| `notch_background_outer_band_fraction` | `0.28` | ROI 바깥쪽 배경 학습 구간의 비율, 0.10~0.60 |
-| `notch_background_distance_threshold_lab` | `None` | 배경색으로 분류할 Lab 거리의 허용 상한을 직접 지정. `None`이면 자동, 지정 시 양수 |
-| `notch_background_noise_margin_lab` | `4.0` | 자동 배경색 거리 임계값에 추가하는 노이즈 여유, 0 이상 |
-| `notch_background_morph_px` | `24.0` | ROI 배경 마스크의 형태학적 처리 크기, 원본 px 기준 양수. 내부에서 축소율·kernel 제한 적용 |
-| `notch_fallback_mode` | `"rim_intrusion"` | ROI 형상 검출이 거부되면 같은 배경 연결성과 외곽 원에서 안쪽 침범을 재검사. `"none"`이면 비활성화 |
-| `notch_failure_mode` | `"error"` | 신뢰할 노치 미검출 시 `RuntimeError`. `"zero"`는 아래 실패 정책에 따라 0° 이미지 반환 |
-| `alignment_interpolation` | `cv2.INTER_CUBIC` | 출력 이미지 회전 보간법. 기존 코드의 OpenCV 보간 상수를 전달 |
-| `alignment_border_value` | `(0, 0, 0)` | 회전 후 입력이 없는 영역에 채울 값. 기본값은 검정이며 BGRA의 기본 alpha는 0 |
+| 파라미터 | 기본값 | 용도 |
+| --- | --- | --- |
+| roi_ratio | 0.55 | 이미지의 짧은 변 대비 중앙 분석 정사각형의 한 변 비율. 출력 영역을 자르는 옵션은 아닙니다. |
+| search_deg | 6.0 | 최초 탐색 범위: ±6도. |
+| coarse_step | 0.15 | 큰 간격 탐색의 각도 간격(도). 작게 하면 계산량이 늘어납니다. |
+| fine_step | 0.02 | 최적 후보 주변의 정밀 탐색 간격(도). |
+| max_dim | 1100 | 분석용 영상의 최대 변 크기(px). 출력 해상도는 그대로입니다. |
+| fft_max_dim | 1024 | FFT 분석용 최대 변 크기(px). |
+| agree_tol_deg | 0.50 | 투영·FFT 및 가로·세로 각도의 합의 허용 차이(도). |
+| full_scan_deg | 44.0 | 확대 탐색과 최종 보정각의 최대 절댓값(도). search_deg 이상, 45 이하로 지정합니다. |
+| max_iter | 3 | 잔여 기울기를 확인·보정하는 최대 반복 횟수. |
+| min_angle_deg | 0.01 | 이보다 작은 잔여각은 추가 보정을 멈춥니다. |
+| alignment_interpolation | cv2.INTER_CUBIC | 최종 이미지 회전 보간법. |
+| alignment_border_value | (0, 0, 0) | 회전으로 비는 영역의 색. BGRA에서는 4개 값을 지정할 수 있습니다. |
 
-ROI 관련 형상·배경 옵션은 `notch_roi_center_px`를 지정했을 때 의미가 있습니다. `notch_background_*`는 ROI 배경 학습 경로를 켰을 때 사용합니다. `notch_fallback_mode="rim_intrusion"` 역시 배경 ROI가 있어야 적용 가능하며, 이미 성공한 1차 검출 결과를 바꾸거나 일반 예외를 숨기지 않습니다. 중심·반경 힌트는 항상 고정된 정답으로 취급되는 값이 아니며, 경로에 따라 외곽 fitting으로 조정될 수 있습니다.
+예를 들어 중앙 영역에 격자선이 너무 적으면 roi_ratio를 키우고, 얇은 선이 축소 과정에서 사라지면 max_dim을 키워볼 수 있습니다. ROI에 외곽 링이나 글자가 많이 들어오면 오히려 줄이는 편이 유리합니다.
 
-보간법이나 빈 영역 색도 이름으로 지정할 수 있습니다.
-
-```python
-import cv2
-
+~~~python
 Angle_refine = angle(
     src,
-    **notch_options,
-    alignment_interpolation=cv2.INTER_LINEAR,
+    roi_ratio=0.70,
+    search_deg=10.0,
+    full_scan_deg=44.0,
+    max_dim=1400,
+    alignment_interpolation=cv2.INTER_CUBIC,
     alignment_border_value=(0, 0, 0),
 )
-```
+~~~
 
-`alignment_border_value`는 OpenCV에 그대로 전달합니다. 회색조에는 `0` 같은 정수, BGR에는 `(B, G, R)`, BGRA에는 `(B, G, R, A)`를 사용하십시오. 기본 `(0, 0, 0)`은 BGRA에서 생략된 alpha가 0으로 처리되어 투명한 검정이 됩니다. 정수 하나를 BGR 전체 채널에 자동 복제하는 별도 처리는 없습니다.
-
-## 입력과 반환
-
-| 구분 | 내용 |
-|---|---|
-| 입력 | `uint8` NumPy 이미지 또는 `str` / `pathlib.Path` 파일 경로 |
-| 지원 이미지 | 회색조 `(H, W)`, BGR `(H, W, 3)`, BGRA `(H, W, 4)` |
-| 반환 | 보정된 `numpy.ndarray` 한 개 |
-| 보존 | 이미지 크기, 채널 수, `uint8` 자료형 |
-| 원본 | 입력 배열을 변경하지 않고 새 배열을 반환 |
-| 회전 | 검출된 웨이퍼 중심 기준. 기본 OpenCV cubic, `alignment_interpolation`으로 조절 |
-| 빈 영역 | 기본 회색조/BGR은 검정, BGRA는 투명한 검정. `alignment_border_value`로 조절 |
-
-같은 크기의 캔버스를 사용하므로 회전한 이미지의 모서리 부분은 잘릴 수 있습니다.
-
-## 보정 기준
-
-기존 V7의 **웨이퍼 외곽 노치 검출 방식**을 분리했습니다. 내부 격자선을 보고 수평을 맞추는 방식이 아닙니다.
-
-1. 이미지의 색상 경계에서 웨이퍼 외곽과 중심을 구합니다.
-2. 기본적으로 아래쪽 방향을 중심으로 ±45° 범위에서 노치를 찾습니다. 탐색 방향·폭 또는 ROI를 지정할 수 있습니다.
-3. 노치가 목표 방향을 향하도록 이미지를 회전합니다. 기본 목표는 아래쪽입니다.
-4. 회전한 이미지 배열만 반환합니다.
-
-이미지 좌표의 오른쪽이 0°, 아래쪽이 90°입니다. 보정은 노치가 대체로 하단에 보이는 전체 웨이퍼 이미지를 전제로 합니다. 노치가 없는 중심 clip이나 임의 360° 방향의 입력에 대한 자동 정렬을 보장하지 않습니다.
-
-`refine_mode`, `refine_radius` 등 교차점 중심 보정 옵션은 이 함수와 관계없습니다. 필수 입력은 `src` 하나이며, 노치 검출용 23개와 출력 회전용 2개의 선택 인자를 이름으로 전달할 수 있습니다.
-
-## 입력 또는 검출에 문제가 있을 때
-
-| 상황 | 예외 |
-|---|---|
-| 지원하지 않는 입력 종류·자료형 | `TypeError` |
-| 빈 이미지·지원하지 않는 채널 형태·디코드 불가 파일 | `ValueError` |
-| 파일 경로가 없음 | `FileNotFoundError` |
-| 잘못된 노치 옵션 범위·지원하지 않는 설정값 | `ValueError` 등 해당 입력 검증 예외 |
-| 웨이퍼 외곽을 구하지 못함 | `RuntimeError` (`notch_failure_mode="zero"`도 해결하지 않음) |
-| 외곽은 구했지만 신뢰할 수 있는 노치를 찾지 못함 | 기본 `"error"`이면 `RuntimeError`; `"zero"`이면 회전하지 않은 새 이미지 |
-
-기본 `notch_failure_mode="error"`는 노치 미검출을 예외로 알립니다. 미검출을 0°로 처리하려는 경우에만 `angle(src, notch_failure_mode="zero")`를 지정합니다. 이 경우 **웨이퍼 외곽을 정상적으로 구한 뒤 노치만 미검출되었을 때** 입력과 같은 픽셀을 가진 새 이미지를 반환합니다. 파일 오류, 잘못된 옵션, 외곽 추정 실패까지 포괄적으로 무시하는 설정은 아닙니다.
-
-이 API는 이미지 한 장만 반환하므로 `"zero"` 결과 자체에는 노치 검출 성공 여부가 들어 있지 않습니다. 실제 0° 보정과 미검출로 인한 0°를 구분해야 한다면 기본 `"error"` 정책을 사용하십시오.
+agree_tol_deg를 크게 하면 불일치를 더 쉽게 받아들이므로, 보정이 실패할 때는 우선 격자선이 분석 영역에 충분히 들어오는지 확인하세요. 기본 탐색 한계는 ±44도이며 정확히 45도 부근까지 필요하면 full_scan_deg=45.0으로 지정할 수 있습니다. 파라미터를 조절해도 원근 왜곡이나 휘어진 격자를 직선 격자로 바꾸지는 않습니다.
 
 ## 검증
 
-```bash
-python -m unittest discover -s tests -v
-```
+~~~bash
+python -B -m unittest discover -s tests -v
+~~~
 
-테스트는 알려진 각도로 회전한 합성 웨이퍼, 회색조·BGR·BGRA, 입력 불변성, 한글 경로, 실패 입력과 독립 import를 확인합니다. 실제 장비에서 발생한 실패 이미지에 대한 검증은 포함하지 않습니다.
+2026-10-27 기준 자동 테스트 23개가 통과했습니다. 테스트 입력은 로컬에서 생성한 기하학적 격자입니다. 알려진 기울기와 독립적인 픽셀 선형회귀로 보정 결과를 검사합니다. 흰색/초록색, 동일 명도 색상, 회색조/BGRA, 양축 정렬, 부정확한 근거 거절, 탐색 범위, 45도 경계 및 angle.py만 복사한 독립 실행을 포함합니다.
 
-## 출처
+추가로 기존 저장소의 웨이퍼 샘플 4장과 MIPS 샘플에 ±3도 회전을 넣은 2개 사례에서 출력·입력 보존을 확인했습니다. MIPS/Casio/Piper 및 주입 회전 사례의 독립 Canny/Hough 측정에서 최대 축 잔여 기울기는 약 0.013도 이내였습니다. Exposed 샘플은 내부 무늬 때문에 독립 Hough 측정이 일치하지 않아 수치 정확도 통과로 세지 않고, 보정 이미지의 격자선 정렬을 눈으로 확인한 결과로 구분합니다.
 
-노치 검출 코드는 [NS-DDC/Wafer_Via의 `wafer_notch_angle.py`](https://github.com/NS-DDC/Wafer_Via/blob/5adf92eb0d91fb5bbb1e09517d9688d68c2e7c18/codex/wafer_notch_angle.py)에서 필요한 의존 함수만 추출했습니다. 공개 API는 이미지 한 장을 반환하는 `angle()`이며, `angle(src)` 기본 호출과 기존 V7 노치 설정을 받는 keyword-only 옵션을 지원합니다. 검출용 색 변환과 출력용 회전을 분리해 원본 채널 구성을 유지합니다.
+사용자 현장의 문제 이미지는 아직 제공되지 않았으므로 해당 이미지의 성공 여부는 별도 확인이 필요합니다.
+
+## 코드 계보
+
+색상 경계·투영·FFT의 기본 접근은 [NS-DDC/Wafer_color_v6의 wafer_color_v6_claude.py](https://github.com/NS-DDC/Wafer_color_v6/blob/9f3b7bf92f7dd2fc2ca111fbe33ae937fac6823b/wafer_color_v6_claude.py)에 있는 각도 추정 경로에서 가져왔습니다. FFT 주파수 링 선택은 V7의 wafer_via_die_render.py 접근도 참고했습니다. 이미지 한 장만 받도록 분리하면서 신호 부족·양축 반복성·각도 합의 검사와 입력/출력 처리를 추가했습니다. 원본 프로젝트를 설치하거나 함께 복사할 필요가 없습니다.
