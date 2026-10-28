@@ -40,7 +40,7 @@ class GridParameterTests(unittest.TestCase):
         for residual in independent_line_angles(output):
             self.assertLess(abs(residual), 0.5)
 
-    def test_numeric_option_validation_precedes_analysis(self):
+    def test_invalid_options_return_original_copy_without_starting_analysis(self):
         cases = (
             ("roi_ratio", 0), ("roi_ratio", 1.01), ("roi_ratio", float("nan")),
             ("search_deg", 0), ("search_deg", 46), ("search_deg", float("inf")),
@@ -52,10 +52,23 @@ class GridParameterTests(unittest.TestCase):
             ("full_scan_deg", 0), ("full_scan_deg", 5), ("full_scan_deg", 46),
             ("max_iter", 0), ("max_iter", 11),
             ("min_angle_deg", -0.1), ("min_angle_deg", 1.1),
+            ("alignment_interpolation", 5), ("alignment_interpolation", 0.5),
+            ("alignment_border_value", (0, 0)),
+            ("alignment_border_value", (0, 0, 256)),
+            ("alignment_border_value", (0, 0, float("nan"))),
         )
         for name, value in cases:
-            with self.subTest(name=name, value=value), self.assertRaises(ValueError):
-                angle(np.zeros((80, 80, 3), np.uint8), **{name: value})
+            with self.subTest(name=name, value=value):
+                source = np.arange(80 * 80 * 3, dtype=np.uint8).reshape(80, 80, 3)
+                before = source.copy()
+                with mock.patch.object(MODULE, "_measure_grid_angle") as measure:
+                    output = angle(source, **{name: value})
+                measure.assert_not_called()
+                np.testing.assert_array_equal(output, before)
+                np.testing.assert_array_equal(source, before)
+                self.assertEqual(output.shape, source.shape)
+                self.assertEqual(output.dtype, source.dtype)
+                self.assertFalse(np.shares_memory(output, source))
 
     def test_nearest_interpolation_and_bgra_border_use_one_original_image_warp(self):
         bgr = synthetic_grid(12.0)
@@ -85,9 +98,13 @@ class GridParameterTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             angle(source, 0.55)
 
-    def test_full_scan_bound_does_not_silently_accept_an_out_of_range_grid(self):
-        with self.assertRaises(RuntimeError):
-            angle(synthetic_grid(25.0), **FAST, search_deg=6.0, full_scan_deg=6.0)
+    def test_grid_outside_full_scan_returns_an_original_copy(self):
+        source = synthetic_grid(25.0)
+        before = source.copy()
+        output = angle(source, **FAST, search_deg=6.0, full_scan_deg=6.0)
+        np.testing.assert_array_equal(output, before)
+        np.testing.assert_array_equal(source, before)
+        self.assertFalse(np.shares_memory(output, source))
 
     def test_explicit_45_degree_scan_aligns_axes_without_requiring_unique_orientation(self):
         output = angle(synthetic_grid(45.0), **FAST, full_scan_deg=45.0)

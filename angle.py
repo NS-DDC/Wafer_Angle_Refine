@@ -4,8 +4,9 @@
 # codex/wafer_via_die_render.py, sector 85. No external project import is used.
 """Deskew the internal orthogonal grid: aligned = angle(src).
 
-The source is resampled once. Absent, one-axis, or contradictory grid evidence
-raises RuntimeError. The nearest axis is used, with 90-degree ambiguity.
+The source is resampled once on success. If correction fails after loading a
+valid image, an unchanged copy is returned so the next pipeline step can run.
+The nearest axis is used, with 90-degree ambiguity.
 """
 from __future__ import annotations
 import math
@@ -345,61 +346,70 @@ def angle(
     roi_ratio is the central analysis square side / shortest image side.
     Angles use degrees; dimensions use analysis pixels. The nearest axis is
     selected modulo 90 degrees, without assigning an absolute die direction.
-    Both axes must repeat visibly. Insufficient or conflicting grid evidence
-    raises RuntimeError. Invalid inputs/parameters raise TypeError/ValueError.
+    Both axes must repeat visibly. After loading a valid image, any ordinary
+    exception during parameter validation or correction returns image.copy().
+    This includes insufficient/conflicting grid evidence and OpenCV errors.
+    Unreadable paths and unsupported input arrays still raise an input error:
+    no valid original image is available in those cases. Process interrupts
+    such as KeyboardInterrupt and SystemExit are not caught.
     """
-    roi_ratio = _finite_parameter("roi_ratio", roi_ratio, 0.0, 1.0, inclusive_low=False)
-    search_deg = _finite_parameter("search_deg", search_deg, 0.0, 45.0, inclusive_low=False)
-    full_scan_deg = _finite_parameter("full_scan_deg", full_scan_deg, search_deg, 45.0)
-    coarse_step = _finite_parameter("coarse_step", coarse_step, 0.01, min(5.0, search_deg))
-    fine_step = _finite_parameter("fine_step", fine_step, 0.001, coarse_step)
-    agree_tol_deg = _finite_parameter("agree_tol_deg", agree_tol_deg, 0.0, 5.0, inclusive_low=False)
-    min_angle_deg = _finite_parameter("min_angle_deg", min_angle_deg, 0.0, 1.0)
-    integers = []
-    for name, value, low, high in (("max_dim", max_dim, 64, 8192),
-                                   ("fft_max_dim", fft_max_dim, 64, 8192),
-                                   ("max_iter", max_iter, 1, 10)):
-        number = _finite_parameter(name, value, low, high)
-        if number != int(number):
-            raise ValueError(f"{name} must be an integer.")
-        integers.append(int(number))
-    max_dim, fft_max_dim, max_iter = integers
-    interpolation = _finite_parameter("alignment_interpolation", alignment_interpolation, 0, 4)
-    if interpolation != int(interpolation):
-        raise ValueError("alignment_interpolation must be an OpenCV interpolation constant.")
-    alignment_interpolation = int(interpolation)
-    try:
-        border = tuple(float(value) for value in alignment_border_value)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError("alignment_border_value must contain 1, 3, or 4 channel values.") from exc
-    if len(border) not in (1, 3, 4) or any(not math.isfinite(value) or not 0 <= value <= 255 for value in border):
-        raise ValueError("alignment_border_value must contain 1, 3, or 4 finite values from 0 to 255.")
     image = _load_image(src)
-    if image.ndim == 2:
-        analysis = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-    elif image.shape[2] == 4:
-        analysis = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
-    else:
-        analysis = image
-    height, width = image.shape[:2]
-    center = ((width - 1.0) / 2.0, (height - 1.0) / 2.0)
-    total = 0.0
-    for _ in range(max_iter):
-        if abs(total) > 1e-12:
-            matrix = cv2.getRotationMatrix2D(center, total, 1.0)
-            view = cv2.warpAffine(analysis, matrix, (width, height), flags=cv2.INTER_LINEAR)
+    try:
+        roi_ratio = _finite_parameter("roi_ratio", roi_ratio, 0.0, 1.0, inclusive_low=False)
+        search_deg = _finite_parameter("search_deg", search_deg, 0.0, 45.0, inclusive_low=False)
+        full_scan_deg = _finite_parameter("full_scan_deg", full_scan_deg, search_deg, 45.0)
+        coarse_step = _finite_parameter("coarse_step", coarse_step, 0.01, min(5.0, search_deg))
+        fine_step = _finite_parameter("fine_step", fine_step, 0.001, coarse_step)
+        agree_tol_deg = _finite_parameter("agree_tol_deg", agree_tol_deg, 0.0, 5.0, inclusive_low=False)
+        min_angle_deg = _finite_parameter("min_angle_deg", min_angle_deg, 0.0, 1.0)
+        integers = []
+        for name, value, low, high in (("max_dim", max_dim, 64, 8192),
+                                       ("fft_max_dim", fft_max_dim, 64, 8192),
+                                       ("max_iter", max_iter, 1, 10)):
+            number = _finite_parameter(name, value, low, high)
+            if number != int(number):
+                raise ValueError(f"{name} must be an integer.")
+            integers.append(int(number))
+        max_dim, fft_max_dim, max_iter = integers
+        interpolation = _finite_parameter("alignment_interpolation", alignment_interpolation, 0, 4)
+        if interpolation != int(interpolation):
+            raise ValueError("alignment_interpolation must be an OpenCV interpolation constant.")
+        alignment_interpolation = int(interpolation)
+        try:
+            border = tuple(float(value) for value in alignment_border_value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("alignment_border_value must contain 1, 3, or 4 channel values.") from exc
+        if len(border) not in (1, 3, 4) or any(not math.isfinite(value) or not 0 <= value <= 255 for value in border):
+            raise ValueError("alignment_border_value must contain 1, 3, or 4 finite values from 0 to 255.")
+        if image.ndim == 2:
+            analysis = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+        elif image.shape[2] == 4:
+            analysis = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
         else:
-            view = analysis
-        delta = _measure_grid_angle(view, roi_ratio=roi_ratio, search_deg=search_deg,
-                                     coarse_step=coarse_step, fine_step=fine_step, max_dim=max_dim,
-                                     fft_max_dim=fft_max_dim, agree_tol_deg=agree_tol_deg,
-                                     full_scan_deg=full_scan_deg)
-        updated = _fold_angle(total + delta)
-        if abs(updated) > full_scan_deg + 1e-9:
-            raise RuntimeError("The accumulated grid correction exceeds full_scan_deg.")
-        total = updated
-        if abs(delta) <= min_angle_deg:
-            break
-    matrix = cv2.getRotationMatrix2D(center, total, 1.0)
-    return cv2.warpAffine(image, matrix, (width, height), flags=alignment_interpolation,
-                          borderMode=cv2.BORDER_CONSTANT, borderValue=border)
+            analysis = image
+        height, width = image.shape[:2]
+        center = ((width - 1.0) / 2.0, (height - 1.0) / 2.0)
+        total = 0.0
+        for _ in range(max_iter):
+            if abs(total) > 1e-12:
+                matrix = cv2.getRotationMatrix2D(center, total, 1.0)
+                view = cv2.warpAffine(analysis, matrix, (width, height), flags=cv2.INTER_LINEAR)
+            else:
+                view = analysis
+            delta = _measure_grid_angle(view, roi_ratio=roi_ratio, search_deg=search_deg,
+                                         coarse_step=coarse_step, fine_step=fine_step, max_dim=max_dim,
+                                         fft_max_dim=fft_max_dim, agree_tol_deg=agree_tol_deg,
+                                         full_scan_deg=full_scan_deg)
+            updated = _fold_angle(total + delta)
+            if abs(updated) > full_scan_deg + 1e-9:
+                raise RuntimeError("The accumulated grid correction exceeds full_scan_deg.")
+            total = updated
+            if abs(delta) <= min_angle_deg:
+                break
+        matrix = cv2.getRotationMatrix2D(center, total, 1.0)
+        return cv2.warpAffine(image, matrix, (width, height), flags=alignment_interpolation,
+                              borderMode=cv2.BORDER_CONSTANT, borderValue=border)
+    except Exception:
+        # Pipeline continuity is intentional. Discard any partial correction
+        # and keep downstream writes from modifying the caller's source array.
+        return image.copy()

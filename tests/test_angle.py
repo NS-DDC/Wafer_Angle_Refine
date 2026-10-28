@@ -109,6 +109,11 @@ class AngleTests(unittest.TestCase):
         self.assertFalse(np.shares_memory(result, source))
         self.assertTrue(result.flags.writeable)
 
+    def assert_original_copy(self, source, before, result):
+        self.assert_image_contract(source, result)
+        np.testing.assert_array_equal(source, before)
+        np.testing.assert_array_equal(result, before)
+
     def assert_grid_aligned(self, result, *, dark=False):
         for residual in independent_line_angles(result, dark=dark):
             self.assertLess(abs(residual), 0.5)
@@ -148,8 +153,8 @@ class AngleTests(unittest.TestCase):
         for residual in independent_line_angles(output, blue=True):
             self.assertLess(abs(residual), 0.5)
         self.assertLess(abs(marker_residual(output)), 0.5)
-        with self.assertRaises(RuntimeError):
-            angle(gray, **FAST)
+        before = gray.copy()
+        self.assert_original_copy(gray, before, angle(gray, **FAST))
 
     def test_gray_bgr_bgra_preserve_shape_dtype_alpha_and_input(self):
         base = synthetic_grid(11.0)
@@ -193,23 +198,27 @@ class AngleTests(unittest.TestCase):
             self.assert_image_contract(source, result)
             np.testing.assert_array_equal(result, angle(source, **FAST))
 
-    def test_blank_images_and_circle_without_internal_grid_are_rejected(self):
+    def test_blank_images_and_circle_without_internal_grid_return_original_copies(self):
         cases = (np.zeros((256, 320, 3), np.uint8), np.full((256, 320, 3), 255, np.uint8), synthetic_grid(axes="none", marker=False))
         for index, source in enumerate(cases):
-            with self.subTest(case=index), self.assertRaises(RuntimeError):
-                angle(source, **FAST)
+            with self.subTest(case=index):
+                before = source.copy()
+                self.assert_original_copy(source, before, angle(source, **FAST))
 
-    def test_single_direction_stripes_are_not_a_two_axis_grid(self):
+    def test_single_direction_stripes_return_original_copies(self):
         for axes in ("vertical", "horizontal"):
-            with self.subTest(axes=axes), self.assertRaises(RuntimeError):
-                angle(synthetic_grid(12.0, axes=axes, marker=False), **FAST)
+            with self.subTest(axes=axes):
+                source = synthetic_grid(12.0, axes=axes, marker=False)
+                before = source.copy()
+                self.assert_original_copy(source, before, angle(source, **FAST))
 
-    def test_noise_and_equal_competing_grids_are_rejected(self):
+    def test_noise_and_equal_competing_grids_return_original_copies(self):
         noise = np.random.default_rng(3512).integers(0, 256, (SIZE, SIZE, 3), dtype=np.uint8)
         conflicting = np.maximum(synthetic_grid(-12, marker=False), synthetic_grid(12, marker=False))
         for label, source in (("noise", noise), ("competing", conflicting)):
-            with self.subTest(case=label), self.assertRaises(RuntimeError):
-                angle(source, **FAST)
+            with self.subTest(case=label):
+                before = source.copy()
+                self.assert_original_copy(source, before, angle(source, **FAST))
 
     def test_unsupported_dtypes_raise_type_error(self):
         for dtype in (np.float32, np.float64, np.uint16, np.int8, np.bool_):
